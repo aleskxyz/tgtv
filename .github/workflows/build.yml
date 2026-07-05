@@ -1,0 +1,134 @@
+name: Build binaries
+
+on:
+  workflow_dispatch: {}
+  release:
+    types: [published]
+
+jobs:
+  build-cli:
+    name: Build CLI (${{ matrix.target }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            make_target: linux-amd64
+            asset_target: cli-asset-linux-amd64
+          - target: linux-arm64
+            make_target: linux-arm64
+            asset_target: cli-asset-linux-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
+
+      - name: Build CLI
+        run: make ${{ matrix.make_target }}
+
+      - name: Hash artifact
+        id: stage
+        run: |
+          set -euo pipefail
+          asset="$(make -s ${{ matrix.asset_target }})"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          sha256sum "$asset"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgtv-${{ matrix.target }}
+          path: ${{ steps.stage.outputs.asset }}
+
+  build-cli-release:
+    name: Build CLI (all platforms, release)
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: go.sum
+
+      - name: Build all CLI targets
+        run: make dist
+
+      - name: Create checksums
+        run: make dist-checksums
+
+      - name: Upload assets to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
+
+  build-and-push-image:
+    name: Build and push multi-arch Docker image
+    runs-on: ubuntu-latest
+    needs: build-cli-release
+    if: always() && (needs.build-cli-release.result == 'success' || needs.build-cli-release.result == 'skipped')
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for release
+        if: github.event_name == 'release'
+        id: meta-release
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tgtv
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Extract metadata (tags, labels) for manual trigger
+        if: github.event_name == 'workflow_dispatch'
+        id: meta-manual
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tgtv
+          tags: |
+            type=raw,value=${{ github.ref_name }}-{{sha}}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ github.event_name == 'release' && steps.meta-release.outputs.tags || steps.meta-manual.outputs.tags }}
+          labels: ${{ github.event_name == 'release' && steps.meta-release.outputs.labels || steps.meta-manual.outputs.labels }}

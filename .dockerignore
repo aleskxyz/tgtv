@@ -1,0 +1,10 @@
+.git
+.gitignore
+*.log
+tgtv
+*.exe
+.env
+docker-compose.yml
+caddy/
+README.md
+DESIGN.md

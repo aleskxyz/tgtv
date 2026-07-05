@@ -1,0 +1,6 @@
+*.log
+/tgtv
+*.exe
+.env
+dist/
+.build/
