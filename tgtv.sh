@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Standalone installer for the TGTV Docker stack.
 # Installs to /opt/tgtv: .env, mediamtx.yml, docker compose files, Caddy config.
+# Native development from a git checkout: see dev/README.md (not this script).
 #
 # Run from anywhere:
-#   curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh | bash
+#   bash <(curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh)
 #
-# Or from a git checkout:
+# Or from a git checkout (production Docker install only):
 #   ./tgtv.sh
 
 set -euo pipefail
 
 INSTALL_DIR="${TGTV_INSTALL_DIR:-/opt/tgtv}"
 # Stack image versions (bump when upgrading)
-TGTV_IMAGE="${TGTV_IMAGE:-ghcr.io/aleskxyz/tgtv:0.1.0}"
+TGTV_IMAGE="${TGTV_IMAGE:-ghcr.io/aleskxyz/tgtv:0.1.1}"
 MEDIAMTX_IMAGE="${MEDIAMTX_IMAGE:-bluenviron/mediamtx:1.19.2}"
 CADDY_IMAGE="${CADDY_IMAGE:-caddy:2.11.4-alpine}"
 ENV_FILE="$INSTALL_DIR/.env"
@@ -31,7 +32,7 @@ Later runs: menu — start/stop/restart (when logged in), reconfigure,
   rotate secrets, login/logout Telegram, uninstall.
 
 Standalone:
-  curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh | bash
+  bash <(curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh)
 
 Environment overrides:
   TGTV_INSTALL_DIR   Install path (default: /opt/tgtv)
@@ -40,6 +41,8 @@ Environment overrides:
   CADDY_IMAGE        Caddy container image
 
 Private IP/hostname → HTTP. Public domain or IP → HTTPS (Caddy automatic TLS).
+
+Native dev (make build, local MediaMTX, no Caddy): dev/README.md
 EOF
 			exit 0
 			;;

@@ -23,7 +23,7 @@ Streams stop after a configurable idle period with no viewers.
 Requires **Docker** and **Docker Compose**.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/aleskxyz/tgtv/main/tgtv.sh)
 ```
 
 Default install directory: `/opt/tgtv`.
@@ -61,7 +61,7 @@ The playlist lists live Telegram broadcasts you can access. Open a channel to st
 
 ## Build from source
 
-For development without the installer:
+For development without the installer, see **[dev/README.md](dev/README.md)**.
 
 ```bash
 git clone https://github.com/aleskxyz/tgtv.git
@@ -78,6 +78,10 @@ You also need **ffmpeg** on `PATH` and a running **MediaMTX** (or compatible RTM
 ```
 
 Linux is recommended for production ingest. Use the Docker stack above for the simplest deployment.
+
+## Development
+
+See **[dev/README.md](dev/README.md)** for native builds, local MediaMTX, log analysis, and architecture notes ([dev/DESIGN.md](dev/DESIGN.md)).
 
 ## License
 

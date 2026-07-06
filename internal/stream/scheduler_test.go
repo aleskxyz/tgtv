@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -158,11 +159,11 @@ func TestSchedulerLiveEdgeCatchUpOnLongDCWait(t *testing.T) {
 	if len(sched.pending) != 0 {
 		t.Fatalf("pending len = %d, want 0", len(sched.pending))
 	}
-	if len(sched.available) != 0 {
-		t.Fatalf("available len = %d, want 0", len(sched.available))
+	if len(sched.available) != 1 {
+		t.Fatalf("available len = %d, want 1 (playback buffer kept)", len(sched.available))
 	}
-	if !sched.postResync {
-		t.Fatal("postResync must be set")
+	if sched.postResync {
+		t.Fatal("postResync must not be set when buffer is kept")
 	}
 	sched.mu.Unlock()
 }
@@ -191,7 +192,7 @@ func TestHandleLiveEdgeProbeResult_catchUpWhenLagHigh(t *testing.T) {
 	sched.nextSegmentTimestamp = 3_930_000
 	sched.available = []Part{{TimestampMS: 3_928_000}}
 	beforeGen := sched.gen
-	sched.handleLiveEdgeProbeResult(3_936_000) // lag 8000ms
+	sched.handleLiveEdgeProbeResult(3_936_000) // lag 8000ms, excess 5000ms
 	wantNext := AdjustBootstrapTimestamp(3_936_000)
 	if len(sched.pending) == 0 || sched.pending[0].timestamp != wantNext {
 		t.Fatalf("first pending ts = %v want %d", sched.pending, wantNext)
@@ -200,10 +201,10 @@ func TestHandleLiveEdgeProbeResult_catchUpWhenLagHigh(t *testing.T) {
 		t.Fatalf("next_ms = %d want > %d after prefetch", sched.nextSegmentTimestamp, wantNext)
 	}
 	if len(sched.available) != 0 {
-		t.Fatalf("available len = %d want 0", len(sched.available))
+		t.Fatalf("available len = %d want 0 (stale buffer trimmed on catch-up)", len(sched.available))
 	}
-	if !sched.postResync {
-		t.Fatal("postResync must be set")
+	if sched.postResync {
+		t.Fatal("postResync must not be set when buffer is kept")
 	}
 	if hookGen != beforeGen+1 {
 		t.Fatalf("hook gen = %d want %d", hookGen, beforeGen+1)
@@ -224,6 +225,46 @@ func TestHandleLiveEdgeProbeResult_skipsWhenLagLow(t *testing.T) {
 	}
 	if len(sched.available) != 1 {
 		t.Fatalf("available len = %d want 1", len(sched.available))
+	}
+	sched.mu.Unlock()
+}
+
+func TestHandleLiveEdgeProbeResult_skipsWhenWarmBufferLag(t *testing.T) {
+	client := &Client{unified: true}
+	sched := NewScheduler(client, zap.NewNop())
+
+	sched.mu.Lock()
+	sched.nextSegmentTimestamp = 3_930_000
+	sched.available = []Part{{TimestampMS: 3_928_000}}
+	sched.handleLiveEdgeProbeResult(3_932_000) // raw lag 4000ms, excess 1000ms
+	if sched.nextSegmentTimestamp != 3_930_000 {
+		t.Fatalf("next_ms = %d want unchanged 3930000", sched.nextSegmentTimestamp)
+	}
+	sched.mu.Unlock()
+}
+
+func TestSeekLiveEdgeLocked_skipsRefetchWhenAlreadyAvailable(t *testing.T) {
+	sched := NewScheduler(&Client{unified: true}, zap.NewNop())
+	sched.mu.Lock()
+	sched.available = []Part{{TimestampMS: 3_933_000}, {TimestampMS: 3_934_000}}
+	sched.nextSegmentTimestamp = 3_936_000
+	sched.seekLiveEdgeLocked(3_934_000, 5000, "test")
+	if sched.nextSegmentTimestamp < 3_935_000 {
+		t.Fatalf("next_ms = %d want >= 3935000", sched.nextSegmentTimestamp)
+	}
+	if len(sched.pending) == 0 || sched.pending[0].timestamp == 3_934_000 {
+		t.Fatalf("pending = %+v must not re-fetch 3934000", sched.pending)
+	}
+	sched.mu.Unlock()
+}
+
+func TestSeekLiveEdgeLocked_trimsStaleAvailable(t *testing.T) {
+	sched := NewScheduler(&Client{unified: true}, zap.NewNop())
+	sched.mu.Lock()
+	sched.available = []Part{{TimestampMS: 3_933_000}, {TimestampMS: 3_934_000}}
+	sched.seekLiveEdgeLocked(3_934_000, 5000, "test")
+	if len(sched.available) != 1 || sched.available[0].TimestampMS != 3_934_000 {
+		t.Fatalf("available = %+v want only 3934000", sched.available)
 	}
 	sched.mu.Unlock()
 }
@@ -276,5 +317,26 @@ func TestSchedulerGetFileFloodWaitRetriesAt100ms(t *testing.T) {
 	delay := retryAt.Sub(before)
 	if delay < NotReadyRetry/2 || delay > NotReadyRetry*2 {
 		t.Fatalf("retry delay %v, want ~%v (not full flood wait)", delay, NotReadyRetry)
+	}
+}
+
+func TestRenderPlaybackRefAdvancesBySegmentDuration(t *testing.T) {
+	sched := NewScheduler(&Client{unified: true}, zap.NewNop())
+	ctx := context.Background()
+
+	sched.mu.Lock()
+	ref := time.Now().Add(-2050 * time.Millisecond)
+	sched.playbackRefTime = ref
+	sched.available = []Part{{TimestampMS: 1_000_000}}
+	sched.render(ctx)
+	got := sched.playbackRefTime
+	sched.mu.Unlock()
+
+	want := ref.Add(time.Duration(SegmentDurationMS) * time.Millisecond)
+	if got.Sub(want).Abs() > 5*time.Millisecond {
+		t.Fatalf("playbackRefTime = %v want %v (segment duration step)", got, want)
+	}
+	if got.After(time.Now().Add(-500 * time.Millisecond)) {
+		t.Fatal("playbackRefTime was reset to wall now() instead of advancing by segment duration")
 	}
 }

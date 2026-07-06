@@ -929,15 +929,14 @@ func (s *Session) recoverOutput(reason string) {
 	)
 }
 
-// onTelegramResync runs after TIME_TOO_SMALL / resync timeline jumps. Keeps RTMP
-// alive and drops pre-resync parts; timeline stays continuous (no HLS discontinuity).
+// onTelegramResync runs after timeline jumps. Keeps playing buffered segments
+// and RTMP continuous — only clears in-flight A/V pairing (native client).
 func (s *Session) onTelegramResync(gen int) {
 	s.noteResync()
-	s.consumeGen.Store(int32(gen))
 	s.assembler.ClearPending()
-	s.sup.log.Info("telegram resync output boundary",
+	s.sup.log.Debug("telegram resync",
 		zap.String("stream", s.streamID),
-		zap.Int("consume_gen", gen),
+		zap.Int("scheduler_gen", gen),
 	)
 }
 

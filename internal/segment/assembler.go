@@ -24,6 +24,7 @@ type pendingSegment struct {
 type Assembler struct {
 	mu                  sync.Mutex
 	tsOffset            float64
+	lastPartTS          int64 // last Telegram segment timestamp written
 	pending             map[int64]*pendingSegment
 	separateAV          bool
 	primaryVideoChannel int
@@ -47,6 +48,7 @@ func (a *Assembler) Reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.tsOffset = 0
+	a.lastPartTS = 0
 	a.pending = make(map[int64]*pendingSegment)
 	a.separateAV = false
 	a.primaryVideoChannel = 0
@@ -81,12 +83,14 @@ func (a *Assembler) acceptLocked(part stream.Part) ([][]byte, error) {
 	}
 
 	if part.Kind == stream.PartKindUnified {
+		a.syncOutputTimelineLocked(part.TimestampMS)
 		result, err := remux.PayloadToMPEGTS(container, payload, a.tsOffset, a.logoPath)
 		if err != nil {
 			ready, _ := a.flushReadyLocked()
 			return ready, err
 		}
 		a.tsOffset += result.Duration
+		a.lastPartTS = part.TimestampMS
 		out := [][]byte{result.MPEGTS}
 		ready, err := a.flushReadyLocked()
 		out = append(out, ready...)
@@ -159,7 +163,7 @@ func (a *Assembler) flushReadyLocked() ([][]byte, error) {
 	slices.Sort(ready)
 	for _, ts := range ready {
 		p := a.pending[ts]
-		chunks, err := a.flushSegmentLocked(p)
+		chunks, err := a.flushSegmentLocked(ts, p)
 		if err != nil {
 			delete(a.pending, ts)
 			return out, err
@@ -170,10 +174,11 @@ func (a *Assembler) flushReadyLocked() ([][]byte, error) {
 	return out, nil
 }
 
-func (a *Assembler) flushSegmentLocked(p *pendingSegment) ([][]byte, error) {
+func (a *Assembler) flushSegmentLocked(ts int64, p *pendingSegment) ([][]byte, error) {
 	if p.audio == nil || p.video == nil {
 		return nil, nil
 	}
+	a.syncOutputTimelineLocked(ts)
 	result, err := remux.MuxAV(
 		p.video.container, p.video.payload,
 		p.audio.container, p.audio.payload,
@@ -183,5 +188,20 @@ func (a *Assembler) flushSegmentLocked(p *pendingSegment) ([][]byte, error) {
 		return nil, err
 	}
 	a.tsOffset += result.Duration
+	a.lastPartTS = ts
 	return [][]byte{result.MPEGTS}, nil
+}
+
+// syncOutputTimelineLocked advances MPEG-TS offset when Telegram media timestamps
+// jump (unified resync keeps old segments then appends a new branch). The native
+// client resets PTS per 1 s fragment; we must not map a +30 s content cliff into
+// +1 s of output timeline.
+func (a *Assembler) syncOutputTimelineLocked(nextTS int64) {
+	if a.lastPartTS <= 0 {
+		return
+	}
+	delta := nextTS - a.lastPartTS
+	if delta > stream.SegmentDurationMS {
+		a.tsOffset += float64(delta-stream.SegmentDurationMS) / 1000.0
+	}
 }

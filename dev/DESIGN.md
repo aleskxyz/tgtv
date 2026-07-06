@@ -471,7 +471,7 @@ chan stream.Part                emitted from Scheduler.out (~1 Hz via render())
 1. `requestSegmentsIfNeeded` — while buffer < 2 s, append new pending segments at `nextSegmentTimestamp`, advance timestamp by 1000 ms.
 2. `checkPendingSegments` — for each pending part not yet downloaded, start `upload.getFile` (respecting min retry time after `TIME_TOO_BIG`).
 3. When all parts of the head pending segment are done, `enqueueSegment` moves payloads into `available`.
-4. `render` (120 Hz ticker) — when wall clock says a second elapsed, pop all parts with the same timestamp from `available` and send on `out` channel.
+4. `render` (~100 Hz ticker) — when `playbackRefTime` says a segment period elapsed, pop all parts with the same timestamp from `available` and send on `out`; advance `playbackRefTime` by `SegmentDurationMS` (native-style pacing, not `time.Now()` per emit).
 
 **Pacing** happens in step 4, not in the supervisor. Emitting faster than 1 segment/s would flood MediaMTX's finite HLS window and players would stall at the live edge.
 
@@ -528,7 +528,7 @@ The call is classified at join time as **unified** or **separate A/V** (`phone.g
 - Scheduler adds one `PartKindUnified` part per pending segment (channel 1).
 - Assembler sees `PartKindUnified` → single `remux.PayloadToMPEGTS(ModeUnified)`.
 - Bootstrap uses `last_timestamp_ms` from the primary stream channel returned by `getGroupCallStreamChannels`.
-- **Live-edge catch-up** (unified only): every ~15 s, compare Telegram's live timestamp to what we are about to emit. If lag exceeds ~4 s, discard buffers and jump `nextSegmentTimestamp` forward (with cooldown). Prevents drifting minutes behind on long runs.
+- **Live-edge catch-up** (unified only): every ~600 s, compare Telegram's live timestamp to what we are about to emit. If excess lag (beyond rebuffer) exceeds ~2 s, discard buffers and jump `nextSegmentTimestamp` forward (with cooldown). Prevents drifting far behind on long runs.
 
 ### Mode B — Separate audio and video
 
@@ -1350,7 +1350,7 @@ The receive engine in `internal/stream/` ports semantics from Telegram Android `
 | Unified resync bootstrap | `getGroupCallStreamChannels.last_timestamp_ms` | `RequestCurrentTime()` on primary channel |
 | Non-unified bootstrap | Stream channel timestamps | Channel 0 `last_timestamp_ms`, else primary channel |
 | getFile datacenter | `stream_dc_id` | `MTProto.UploadGetFile` on per-ingest DC |
-| 1 Hz output | Render loop wall clock | `scheduler.render()` + `playbackRefTime` |
+| 1 Hz output | `playbackRefTime` + `SegmentDurationMS` | `scheduler.render()` — one segment per 1 s reference step |
 | Resync without decoder reset | No player reset | `onTelegramResync` — no `Publisher.Reset()` |
 | FLOOD_WAIT on getFile | Still retry in 100 ms | `handleNotReady` uses `NotReadyRetry` for getFile flood |
 
@@ -1373,7 +1373,7 @@ The official app plays one live at a time; tgtv supports `MAX_CONCURRENT_INGESTS
 | Defer getFile during DC wait | `checkPendingSegments` | Respects `StreamDCWaitRemaining()`. |
 | Defer hard rejoin on long backoff | `shouldDeferStreamDCRejoin` | Waits when DC/bootstrap backoff ≥ 5 s. |
 | Ingest start stagger | `waitIngestStagger` | `INGEST_START_STAGGER_SECONDS` between joins. |
-| Live-edge catch-up (unified) | `maybeProbeLiveEdge` | 15 s probe; seek if lag ≥ 4 s (30 s cooldown). |
+| Live-edge catch-up (unified) | `maybeProbeLiveEdge` | 600 s probe; seek if excess lag ≥ 2 s (30 s cooldown). |
 | Live-edge after DC flood | `handleLiveEdgeCatchUp` | Re-bootstrap after stream DC wait ≥ 3 s. |
 
 Unified resync uses `next_ms = -1` server bootstrap — no incremental `last_good + 1s` or consumption-based prefetch cap. Prefetch is gated only by the 2 s buffer rule.

@@ -261,11 +261,8 @@ func (c *Client) RequestCurrentTime(ctx context.Context) (int64, error) {
 		return 0, ErrNoStreams
 	}
 	if c.unified {
-		primary, ok := SelectPrimaryStreamChannel(channels.Channels)
-		if !ok {
-			return 0, ErrNoStreams
-		}
-		return primary.LastTimestampMs, nil
+		// LivePlayer.java:532 — channels.get(0).last_timestamp_ms
+		return channels.Channels[0].LastTimestampMs, nil
 	}
 	for _, ch := range channels.Channels {
 		if ch.Channel == 0 {
@@ -431,7 +428,8 @@ func (c *Client) FetchPart(ctx context.Context, timestampMS, duration int64, par
 		Offset:       0,
 		Limit:        GetFileLimitBytes,
 		CDNSupported: false,
-		Precise:      true,
+		// LivePlayer.java TL_upload_getFile — precise flag not set.
+		Precise: false,
 	})
 	responseMS := time.Now().UnixMilli()
 

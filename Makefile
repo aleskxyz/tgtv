@@ -1,7 +1,8 @@
 .PHONY: help build install test test-race vet fmt clean docker-build \
 	dist dist-checksums all \
 	linux-amd64 linux-arm64 \
-	cli-asset-linux-amd64 cli-asset-linux-arm64
+	cli-asset-linux-amd64 cli-asset-linux-arm64 \
+	mediamtx-dev mediamtx-down
 
 BIN        := tgtv
 CMD        := ./cmd/tgtv
@@ -68,3 +69,9 @@ cli-asset-linux-amd64:
 
 cli-asset-linux-arm64:
 	@echo $(CLI_ASSET_LINUX_ARM64)
+
+mediamtx-dev: ## Start dev MediaMTX (dev/docker-compose.dev.yml)
+	docker compose -f dev/docker-compose.dev.yml up -d
+
+mediamtx-down: ## Stop dev MediaMTX
+	docker compose -f dev/docker-compose.dev.yml down

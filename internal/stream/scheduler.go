@@ -223,7 +223,9 @@ func (s *Scheduler) render(ctx context.Context) {
 				toSend = append(toSend, s.available[0])
 				s.available = s.available[1:]
 			}
-			s.playbackRefTime = time.Now()
+			// Native client advances by segment duration, not wall now()
+			// (StreamingMediaContext.cpp:521 — _playbackReferenceTimestamp += segment->duration).
+			s.playbackRefTime = s.playbackRefTime.Add(time.Duration(SegmentDurationMS) * time.Millisecond)
 		}
 	}
 
@@ -401,9 +403,11 @@ func (s *Scheduler) handleLiveEdgeProbeResult(raw int64) {
 		return
 	}
 	lag := raw - head
-	if lag < LiveEdgeCatchUpThresholdMS {
+	excessLag := lag - RebufferMS
+	if excessLag < LiveEdgeCatchUpThresholdMS {
 		s.log.Debug("live edge ok",
 			zap.Int64("lag_ms", lag),
+			zap.Int64("excess_lag_ms", excessLag),
 			zap.Int64("head_ms", head),
 			zap.Int64("live_ms", raw),
 		)
@@ -412,6 +416,7 @@ func (s *Scheduler) handleLiveEdgeProbeResult(raw int64) {
 	if !s.lastLiveEdgeCatchUpAt.IsZero() && time.Now().Before(s.lastLiveEdgeCatchUpAt.Add(LiveEdgeCatchUpCooldown)) {
 		s.log.Debug("live edge lag above threshold; cooldown",
 			zap.Int64("lag_ms", lag),
+			zap.Int64("excess_lag_ms", excessLag),
 			zap.Int64("head_ms", head),
 			zap.Duration("cooldown", time.Until(s.lastLiveEdgeCatchUpAt.Add(LiveEdgeCatchUpCooldown))),
 		)
@@ -448,14 +453,17 @@ func (s *Scheduler) seekLiveEdgeLocked(adjusted int64, lag int64, reason string)
 	if head >= 0 && adjusted <= head {
 		return
 	}
-	s.nextSegmentTimestamp = adjusted
-	s.resetForLiveEdgeLocked()
+	s.trimAvailableBeforeLocked(adjusted)
+	nextFetch := s.catchUpNextFetchMS(adjusted)
+	s.nextSegmentTimestamp = nextFetch
+	s.discardAllPendingLocked()
 	s.lastLiveEdgeCatchUpAt = time.Now()
 	gen := s.gen
 	s.log.Info("live edge catch-up",
 		zap.String("reason", reason),
 		zap.Int64("lag_ms", lag),
-		zap.Int64("next_ms", adjusted),
+		zap.Int64("next_ms", nextFetch),
+		zap.Int64("adjusted_ms", adjusted),
 		zap.Int("gen", gen),
 	)
 	if s.onResync != nil {
@@ -464,6 +472,55 @@ func (s *Scheduler) seekLiveEdgeLocked(adjusted int64, lag int64, reason string)
 	ctx := s.bgCtx()
 	s.requestSegmentsIfNeeded(ctx)
 	s.checkPendingSegments(ctx)
+}
+
+// trimAvailableBeforeLocked drops queued segments older than the catch-up target.
+// Caller must hold s.mu.
+func (s *Scheduler) trimAvailableBeforeLocked(ts int64) {
+	if len(s.available) == 0 {
+		return
+	}
+	out := s.available[:0]
+	for _, part := range s.available {
+		if part.TimestampMS >= ts {
+			out = append(out, part)
+		}
+	}
+	s.available = out
+}
+
+// catchUpNextFetchMS picks the next fetch position without re-requesting segments
+// already present in available. Caller must hold s.mu.
+func (s *Scheduler) catchUpNextFetchMS(adjusted int64) int64 {
+	next := adjusted
+	if s.availableHasTimestampLocked(adjusted) {
+		next = adjusted + SegmentDurationMS
+	}
+	if max := s.maxAvailableTimestampLocked(); max >= adjusted {
+		if candidate := max + SegmentDurationMS; candidate > next {
+			next = candidate
+		}
+	}
+	return next
+}
+
+func (s *Scheduler) availableHasTimestampLocked(ts int64) bool {
+	for _, part := range s.available {
+		if part.TimestampMS == ts {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scheduler) maxAvailableTimestampLocked() int64 {
+	var max int64 = -1
+	for _, part := range s.available {
+		if part.TimestampMS > max {
+			max = part.TimestampMS
+		}
+	}
+	return max
 }
 
 func (s *Scheduler) scheduleBootstrapRetryLocked() {
@@ -751,7 +808,8 @@ func (s *Scheduler) handleResync(responseMS int64) {
 		return
 	}
 	s.nextSegmentTimestamp = ResyncNextTimestamp(s.client.Unified(), responseMS)
-	s.resetForLiveEdgeLocked()
+	// StreamingMediaContext.cpp:873-885 — discard pending only; keep _availableSegments.
+	s.discardAllPendingLocked()
 	gen := s.gen
 	s.log.Info("resync", zap.Int64("next_ms", s.nextSegmentTimestamp), zap.Int("gen", gen))
 	if s.onResync != nil {
@@ -769,7 +827,7 @@ func (s *Scheduler) handleLiveEdgeCatchUp(retryAfter time.Duration) {
 		return
 	}
 	s.nextSegmentTimestamp = -1
-	s.resetForLiveEdgeLocked()
+	s.discardAllPendingLocked()
 	s.bootstrapInFlight = false
 	s.bootstrapRetryAt = time.Now().Add(retryAfter)
 	gen := s.gen
@@ -791,11 +849,6 @@ func (s *Scheduler) handleLiveEdgeCatchUp(retryAfter time.Duration) {
 		s.requestSegmentsIfNeeded(ctx)
 		s.checkPendingSegments(ctx)
 	})
-}
-
-func (s *Scheduler) resetForLiveEdgeLocked() {
-	s.discardAllPendingLocked()
-	s.flushAvailableForResyncLocked()
 }
 
 // enqueueSegment pushes completed parts into _availableSegments (not out).

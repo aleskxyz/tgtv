@@ -1,0 +1,22 @@
+# MediaMTX config for local development (see dev/README.md).
+# mpegts HLS avoids LL-HLS gap.mp4 placeholders that VLC cannot play.
+
+logLevel: info
+
+# Must match MEDIAMTX_HLS_CDN_SECRET in your repo-root .env
+hlsCDNSecret: change-me-mediamtx-cdn-secret
+
+hls: yes
+hlsAddress: :8888
+hlsVariant: mpegts
+hlsSegmentCount: 45
+hlsSegmentDuration: 1s
+hlsAlwaysRemux: yes
+
+rtmp: yes
+rtmpAddress: :1935
+
+readTimeout: 3600s
+
+paths:
+  all_others:

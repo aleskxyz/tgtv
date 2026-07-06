@@ -1,0 +1,17 @@
+# Local dev MediaMTX — RTMP/HLS on localhost for native `./.build/tgtv serve`.
+#
+# From repo root:
+#   docker compose -f dev/docker-compose.dev.yml up -d
+#   docker compose -f dev/docker-compose.dev.yml down
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.19.2
+    container_name: tgtv-mediamtx-dev
+    restart: unless-stopped
+    ports:
+      - "1935:1935"
+      - "8888:8888"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    command: /mediamtx.yml

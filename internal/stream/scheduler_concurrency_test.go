@@ -88,7 +88,7 @@ func TestSchedulerRecoverOutputClearsBuffer(t *testing.T) {
 	}
 }
 
-func TestSchedulerResyncClearsAvailableAndNotifies(t *testing.T) {
+func TestSchedulerResyncKeepsAvailableAndNotifies(t *testing.T) {
 	mt := &MTProto{}
 	client := NewClient(mt, &tg.User{}, tg.InputGroupCall{ID: 1, AccessHash: 1}, true)
 	sched := NewScheduler(client, zap.NewNop())
@@ -112,11 +112,34 @@ func TestSchedulerResyncClearsAvailableAndNotifies(t *testing.T) {
 	}
 	sched.mu.Lock()
 	defer sched.mu.Unlock()
-	if len(sched.available) != 0 {
-		t.Fatalf("available len = %d, want 0 after resync", len(sched.available))
+	if len(sched.available) != 1 {
+		t.Fatalf("available len = %d, want 1 after telegram resync", len(sched.available))
 	}
-	if !sched.postResync {
-		t.Fatal("postResync must be set after handleResync")
+	if sched.postResync {
+		t.Fatal("postResync must not be set after telegram resync")
+	}
+}
+
+func TestSchedulerResyncEmitsBufferedParts(t *testing.T) {
+	mt := &MTProto{}
+	client := NewClient(mt, &tg.User{}, tg.InputGroupCall{ID: 1, AccessHash: 1}, true)
+	sched := NewScheduler(client, zap.NewNop())
+	ctx := context.Background()
+
+	sched.mu.Lock()
+	sched.playbackRefTime = time.Now().Add(-1100 * time.Millisecond)
+	sched.available = []Part{{TimestampMS: 3106000, ResyncGen: 0}}
+	sched.handleResync(3106000)
+	sched.render(ctx)
+	sched.mu.Unlock()
+
+	select {
+	case p := <-sched.out:
+		if p.TimestampMS != 3106000 {
+			t.Fatalf("emitted ts = %d, want 3106000", p.TimestampMS)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected buffered part emit after telegram resync")
 	}
 }
 
@@ -127,12 +150,13 @@ func TestSchedulerResyncEmitsWithoutRebufferDelay(t *testing.T) {
 	ctx := context.Background()
 
 	sched.mu.Lock()
+	sched.available = []Part{{TimestampMS: 3106000, ResyncGen: 0}}
 	sched.handleResync(3106000)
 	sched.render(ctx)
 	if sched.waitBufferedMS != 0 {
-		t.Fatalf("waitBufferedMS = %d during post-resync bootstrap, want 0", sched.waitBufferedMS)
+		t.Fatalf("waitBufferedMS = %d with buffered parts, want 0", sched.waitBufferedMS)
 	}
-	sched.available = []Part{{TimestampMS: 3106000, ResyncGen: sched.gen}}
+	sched.playbackRefTime = time.Now().Add(-1100 * time.Millisecond)
 	sched.mu.Unlock()
 
 	done := make(chan struct{})
@@ -146,15 +170,9 @@ func TestSchedulerResyncEmitsWithoutRebufferDelay(t *testing.T) {
 	select {
 	case <-sched.out:
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("expected immediate part emit after resync refill")
+		t.Fatal("expected immediate part emit after resync with buffered parts")
 	}
 	<-done
-
-	sched.mu.Lock()
-	defer sched.mu.Unlock()
-	if sched.postResync {
-		t.Fatal("postResync must clear after first emit")
-	}
 }
 
 func TestSchedulerRunCtxCancelledOnShutdown(t *testing.T) {

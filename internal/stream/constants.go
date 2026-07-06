@@ -37,10 +37,10 @@ const (
 	LiveEdgeCatchUpAfterDCWait = 3 * time.Second
 	// LiveEdgeProbeInterval — how often unified ingest polls last_timestamp_ms to
 	// detect drift from Telegram's live edge (scheduler-only; not in native client).
-	LiveEdgeProbeInterval = 15 * time.Second
-	// LiveEdgeCatchUpThresholdMS — when output head lags live edge by this much,
-	// discard buffered segments and re-seek near live (AdjustBootstrapTimestamp).
-	LiveEdgeCatchUpThresholdMS int64 = 4000
+	LiveEdgeProbeInterval = 600 * time.Second
+	// LiveEdgeCatchUpThresholdMS — catch up when (live − head − RebufferMS) exceeds
+	// this (excess drift beyond normal playback buffer).
+	LiveEdgeCatchUpThresholdMS int64 = 2000
 	// LiveEdgeCatchUpCooldown — minimum time between proactive catch-up jumps.
 	LiveEdgeCatchUpCooldown = 30 * time.Second
 

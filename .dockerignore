@@ -7,4 +7,4 @@ tgtv
 docker-compose.yml
 caddy/
 README.md
-DESIGN.md
+dev/DESIGN.md
